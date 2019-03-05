@@ -1,0 +1,216 @@
+---
+title: "City of Cape Town waste collection GPS and beat analysis // Data allocation"
+author: "Elias J. Willemse (elias.willemse@up.ac.za)"
+date: "6/22/2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+## Background
+
+The objective of the waste beat analysis is to analyse waste beats for the City of Cape Town and link the beats to waste collection vehicle GPS records. The vehicle GPS data has been made available for research purposes by the City of Cape Town and have been converted to an SQLite Entity Relationship Database (ERD), available under `../data/dataBaseStructure/dbs/CapeTown_Waste_mod.db`. The ERD-diagram, showing the schematics of the database is available under `../data/dataBaseStructure/dbs/CapeTownWasteDb.mwb` and can be opened and viewed using [MySQLWorkbench](https://www.mysql.com/products/workbench/). The original GPS records are available under `../data/full/waste.txt`, and the beat data is available under `../data/beats/Collection beats` and was retrieved from the City of Cape Town's [OpenData portal](http://web1.capetown.gov.za/web1/opendataportal) under the [Collection beats page](http://web1.capetown.gov.za/web1/opendataporta/DatasetDetail?DatasetName=Collection%20beats&ContentType=Data%20set). The files were retrieved in June 2017.
+
+For research and model development purposes, and as recommended in the book [R for Data Science](http://r4ds.had.co.nz), [Chapter 22: Introduction](http://r4ds.had.co.nz/model-intro.html), the data will be split into three sets as follows:
+
+1. 60% of the data will be used for training and general exploratory research and analysis;
+2. 20% of the data will be used as a query set, whereby different models are tested and compared; and
+3. 20% of the data will be exclusively used as a test set to formally test the performance of the _final_, possibly automated models.
+
+This document describes how the above sets were generated.
+
+## Available data
+
+The converted GPS records are available in an SQLite database and can be accessed directly in R using the `DBI` R package. First the package has to be installed if necessary. Thereafter a connection can be established to the database and data can be retrieved from the using standard SQL queries. For each query in this document a new connection will be established. 
+
+The code below gives the table names for the database, as well as the number of records in each table:
+
+```{r, echo = FALSE}
+library(DBI)
+dbPath <- '../data/dataBaseStructure/dbs/CapeTown_Waste_mod.db'
+conDB <- dbConnect(RSQLite::SQLite(), dbname = dbPath)
+tableNames <- dbListTables(conDB)
+cat('Table name : Number of records\n')
+for(tName in tableNames)
+{
+  q <- sprintf('SELECT Count(*) FROM %s', tName)
+  nRecords <- dbGetQuery(conDB, q)$`Count(*)`
+  cat(paste(tName, ':', nRecords, '\n'))
+}
+disconneted <- dbDisconnect(conDB)
+```
+
+The beat boundaries can be visualized using the `WasteServiceBoundaryPoint` table and the `ggplot2` library:
+
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+library(ggplot2)
+dbPath <- '../data/dataBaseStructure/dbs/CapeTown_Waste_mod.db'
+conDB <- dbConnect(RSQLite::SQLite(), dbname = dbPath)
+
+q <- "SELECT * FROM WasteServiceBoundaryPoint"
+boundaryPointRecords <- dbGetQuery(conDB, q)
+
+gPlot <- ggplot(data = boundaryPointRecords, aes(x = long, y = lat, group = WasteServiceBeat_idWasteServiceBeatGroup)) +
+  geom_path(size = 0.5) + theme_bw() + coord_quickmap() + 
+  ggtitle('Service beats of the City of Cape Town')
+gPlot
+
+disconneted <- dbDisconnect(conDB)
+```
+
+The time-span of the available GPS records over the day-of-week with {1 : Monday,..., 7 : Sunday} can be analysed using the `ServiceDate` table and the `lubridate` library:
+
+```{r, echo = FALSE}
+library(lubridate)
+dbPath <- '../data/dataBaseStructure/dbs/CapeTown_Waste_mod.db'
+conDB <- dbConnect(RSQLite::SQLite(), dbname = dbPath)
+
+q <- "SELECT * FROM ServiceDate"
+dateRecords <- dbGetQuery(conDB, q)
+
+dateRecords$date <- ymd(dateRecords$date)
+
+firstDate <- min(dateRecords$date)
+lastDate <- max(dateRecords$date)
+nDays <- as.integer(as.duration(lastDate - firstDate)/(60*60*24))
+nYears <- nDays/365
+
+cat(sprintf('Date of first record: %s', firstDate))
+cat(sprintf('Date of last record: %s', lastDate))
+cat(sprintf('Time span of records (days): %i', nDays))
+cat(sprintf('Time span of records (years): %f', nYears))
+cat(sprintf('Number of days in time-period without GPS records: %i', (nDays - nrow(dateRecords))))
+
+gPlot <- ggplot(dateRecords, aes(x = date, y = nRecords, col = as.factor(dayOfWeek_int))) + 
+  geom_point() + theme_bw() + 
+  ggtitle('Number of GPS records per date in the study period')
+gPlot
+
+gPlot <- ggplot(dateRecords, aes(x = nRecords, fill = as.factor(dayOfWeek_int))) + 
+  geom_histogram(alpha = 0.25)  + theme_bw() + 
+  ggtitle('Histogram of the number of GPS records per date')
+gPlot
+
+disconneted <- dbDisconnect(conDB)
+```
+
+The above figures show that the first GPS records were recorded in early 2011 but the records were not maintained in the following year. In 2013 a number of GPS points were recorded but it would seem that they were not recorded for the full fleet, or they were recorded at a low GPS frequency signal. The end of 2013 saw a sharp increase in the number of GPS recordings, with a prominent difference between the number of points per weekday (days 1 to 5) and weekends (days 6 and 7) This is expected since residential waste collection takes place over weekdays. 
+
+The increase in GPS points can be due to more vehicles being fitted with GPS devices or with GPS devices sending their signals more frequently. It is unknown what impact this will have on the analysis, but the discrepancy between 2013 and 2014 GPS points should be further investigated by analyzing the unique number of vehicles sending GPS records over the two periods, and the frequency of GPS records for vehicles.
+
+Until such analysis are completed only 2014 will be used for the analysis.
+
+## Training, querying and testing sets
+
+The purpose of the waste beat analysis is to see whether GPS records can be used to measure how a beat was serviced, to predict how a beat will be serviced, based on its past service, and to predict how a new beat will be serviced, based the characteristics of the new beat compared to existing beats. The 60-20-20 split therefore has be applied on time and beats. 
+
+For the beats analysis, only 60% will be used for training, 20% will be used for queries and 20% completely removed for final testing. It should be noted that beats may be connected, therefore served by one vehicle on the same days. It is unknown what effect this will have on the preliminary analysis.
+
+For the time analysis, the first 60% of days, starting 2014, will be used for training, the next 20% will be used for queries and the last 20% completely removed for final testing. It should be noted that seasonal effects, that are not fully represented in the training set, may strongly influence the results.
+
+### Service beats selection
+
+The following methods was used to randomly select service beats and allocate them to one of the three categories. Selection was uniformly applied, and the results were written as to the `beatDatasetAllocation.csv` file. The random seed was arbitrarily set to `set.seed(313)` to ensure that the same allocation is made if the experiment is repeated.
+
+```{r, echo = FALSE}
+set.seed(313)
+dbPath <- '../data/dataBaseStructure/dbs/CapeTown_Waste_mod.db'
+conDB <- dbConnect(RSQLite::SQLite(), dbname = dbPath)
+
+q <- "SELECT * FROM WasteServiceBeat"
+beatRecords <- dbGetQuery(conDB, q)
+nRecords <- nrow(beatRecords)
+
+analysisCount <- round(nRecords*0.6, 0)
+queryCount <- round(nRecords*0.2, 0)
+testCount <- nRecords - analysisCount - queryCount
+
+cat(sprintf('Number of beats for analysis: %i\n', analysisCount))
+cat(sprintf('Number of beats for queries: %i\n', queryCount))
+cat(sprintf('Number of beats for testing: %i\n', testCount))
+
+used <- rep(FALSE, nRecords)
+
+analysisRecordRows <- sample(1:nRecords, replace = FALSE, size = analysisCount)
+used[analysisRecordRows] <- TRUE
+
+queryPool <- c(1:nRecords)[!used]
+queryRecordRows <- sample(queryPool, replace = FALSE, size = queryCount)
+used[queryRecordRows] <- TRUE
+
+testingRecordRows <- c(1:nRecords)[!used]
+
+nAnalysis <- length(analysisRecordRows)
+nQuery <- length(queryRecordRows)
+nTesting <- length(testingRecordRows)
+
+beatRecords$datasetAllocation <- NA
+beatRecords[analysisRecordRows,]$datasetAllocation <- "Training"
+beatRecords[queryRecordRows,]$datasetAllocation <- "Query"
+beatRecords[testingRecordRows,]$datasetAllocation <- "Testing"
+
+q <- "SELECT * FROM WasteServiceBeatGroup"
+beatGroups <- dbGetQuery(conDB, q) %>% left_join(beatRecords, by = c('idWasteServiceBeatGroup' = 'idWasteServiceBeat'))
+
+
+write.csv(beatRecords, 'beatDatasetAllocation.csv', row.names = FALSE)
+write.csv(beatGroups, 'beatGroupDatasetAllocation.csv', row.names = FALSE)
+
+write.csv(filter(beatRecords, datasetAllocation == 'Training'), 'beatDatasetTraining.csv', row.names = FALSE)
+write.csv(filter(beatGroups, datasetAllocation == 'Training'), 'beatGroupDatasetTraining.csv', row.names = FALSE)
+
+gPlot <- ggplot(data = beatRecords, aes(x = datasetAllocation, fill = collectionDay)) + geom_bar(position = "dodge")
+gPlot
+
+disconneted <- dbDisconnect(conDB)
+```
+
+The above figure, which shows the number of beats assigned to the different datasets and the day of week service date of the beat,  shows that the Monday to Friday normal residential collection days are well represented withing each data set, but that the allocation of the trade and flats are less represented, which will make training for this type of service difficult. These beats could potentially be removed, making the focus of the analysis exclusively on residential waste collection.
+
+### Date selection
+
+The selection of the study periods is more straight-forward. Starting from 2014 the first 60% of days will be used for training, the next 20% for querying, and the last 20% for final testing. rResults were written to the `dateDatasetAllocation.csv` file.
+
+```{r, echo = FALSE}
+library(lubridate)
+dbPath <- '../data/dataBaseStructure/dbs/CapeTown_Waste_mod.db'
+conDB <- dbConnect(RSQLite::SQLite(), dbname = dbPath)
+
+q <- "SELECT * FROM ServiceDate ORDER BY date ASC"
+dateRecords <- dbGetQuery(conDB, q)
+
+analysisPool <- subset(dateRecords, year >= 2014)
+
+nRecords <- nrow(analysisPool)
+
+analysisCount <- round(nRecords*0.6, 0)
+queryCount <- round(nRecords*0.2, 0)
+testCount <- nRecords - analysisCount - queryCount
+
+cat(sprintf('Number of days for analysis: %i', analysisCount))
+cat(sprintf('Number of days for queries: %i', queryCount))
+cat(sprintf('Number of days for testing: %i', testCount))
+
+analysisPool$datasetAllocation <- NA
+analysisPool[1:analysisCount,]$datasetAllocation <- "Training"
+analysisPool[(analysisCount + 1):(analysisCount + queryCount),]$datasetAllocation <- "Query"
+analysisPool[(analysisCount + queryCount + 1):nRecords,]$datasetAllocation <- "Testing"
+
+write.csv(analysisPool, 'dateDatasetAllocation.csv', row.names = FALSE)
+write.csv(filter(analysisPool, datasetAllocation == 'Training'), 'dateDatasetTraining.csv', row.names = FALSE)
+
+
+gPlot <- ggplot(data = analysisPool, aes(x = datasetAllocation, y = nRecords, fill =  as.factor(dayOfWeek_int))) + geom_boxplot()
+gPlot
+
+disconneted <- dbDisconnect(conDB)
+```
+
+The above figures shows that the number of records per day of week in each of the training sets are adequately represented.
+
+## Conclusion
+
+When analyzing the GPS records and beats, the newly created `dateDatasetAllocation.csv` and `beatDatasetAllocation.csv` should be loaded, instead of the database tables, and the GPS records filtered according to the analysis stage. For early analysis only the `Testing` dates and service beats should be used. For mother advanced analysis the `Testing` and `Query` dates and beats can be used. The remaining `Testing` beats and dates should only be used once for the final automated models.

@@ -1,0 +1,1114 @@
+---
+title: "City of Cape Town waste collection GPS and beat analysis // Beat count analysis"
+author: "Elias J. Willemse (elias.willemse@up.ac.za)"
+date: "6/22/2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(DBI)
+library(geosphere)
+library(ggmap)
+```
+
+## Background
+
+In this document the number of GPS traces within collection beats are analysed over the day-of-week. a single randomly chose waste collection beat is analysed in detailed, using the `tidyverse` principles. There seems to be a difference between beats that are collected by the waste department, `serviceProvider = 'Departmental'`, and those that are outsourced, `serviceProvider = 'Outsourced'`.
+
+## Single departmental beat analysis
+
+To analyse any beat, the analysis have been converted to functions.
+
+The random beat chosen for analysis is:
+
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+set.seed(31)
+beatInsourcedData <- read.csv('beatGroupDatasetTraining.csv') %>% filter(serviceProvider == 'Departmental')
+
+isolateBeat <- function(beatData, random = TRUE, id = NA)
+{
+  if (random == TRUE)
+  {
+    analyseBeat <- sample(beatData$idWasteServiceBeatGroup, size = 1)
+  }else{
+    analyseBeat <- id
+  }
+  
+  beatAnalyse <- filter(beatData, idWasteServiceBeatGroup == analyseBeat)
+  
+  dbPath <- '../data/dataBaseStructure/dbs/CapeTown_Waste_mod.db'
+  conDB <- dbConnect(RSQLite::SQLite(), dbname = dbPath)
+  
+  q <- 'SELECT * FROM WasteServiceBoundaryPoint WHERE WasteServiceBeat_idWasteServiceBeatGroup = :a'
+  boundaryRecords <- dbGetQuery(conDB, q, params = list(a = beatData$idWasteServiceBeatGroup))
+  
+  chosenBoundaryRecords <- filter(boundaryRecords, WasteServiceBeat_idWasteServiceBeatGroup %in% beatAnalyse$idWasteServiceBeatGroup)
+  
+  p <- ggplot(boundaryRecords, aes(x = long, y = lat, group = WasteServiceBeat_idWasteServiceBeatGroup)) + 
+    geom_path(col = 'grey', size = 0.5) + geom_polygon(data = chosenBoundaryRecords, fill = 'red', col = 'darkred') + 
+    coord_quickmap() + theme_bw() + ggtitle('Training beat selected for analysis')
+  disconneted <- dbDisconnect(conDB)
+  return(list(beatInfo = beatAnalyse, chosenBeatGroup = beatAnalyse, beatLocation = p))
+}
+
+beatOutput <- isolateBeat(beatInsourcedData)
+beatOutput$beatInfo
+beatOutput$beatLocation
+```
+
+Next we can anayse the number of records per day in the beat, and visualise the actual GPS record placements. We further group the analysis per day of week to see if there is a  prominent service day that corrisponds to the documented collection day of the area, which is given as Thursday (day 4).
+
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+analyseBeat <- function(chosenBeatGroup, days = 1:7)
+{
+  dateData <- read.csv('dateDatasetTraining.csv')
+  
+  dbPath <- '../data/dataBaseStructure/dbs/CapeTown_Waste_mod.db'
+  conDB <- dbConnect(RSQLite::SQLite(), dbname = dbPath)
+  
+  q <- 'SELECT * FROM ServiceDate_has_WasteServiceBeatGroup WHERE WasteServiceBeatGroup_idWasteServiceBeatGroup = :a'
+  beatDateRecords <- dbGetQuery(conDB, q, params = list(a = chosenBeatGroup$idWasteServiceBeatGroup)) %>% inner_join(dateData, by = c('ServiceDate_idServiceDates' = 'idServiceDates')) %>% filter(dayOfWeek_int %in% days)
+  
+  recordsPerDow <- beatDateRecords %>% group_by(dayOfWeek_int) %>% summarise(sum(nRecords.x))
+  
+  q <- 'SELECT * FROM ConvertedGpsRecord WHERE WasteServiceBeatGroup_idWasteServiceBeatGroup = :a'
+  beatGpsRecords <- dbGetQuery(conDB, q, params = list(a = chosenBeatGroup$idWasteServiceBeatGroup)) %>% inner_join(dateData, by = c('ServiceDates_idServiceDates' = 'idServiceDates')) %>% filter(dayOfWeek_int %in% days)
+  
+  p <- ggplot(beatGpsRecords, aes(x = long, y = lat)) + geom_point(alpha = 0.5, size = 0.1) + facet_wrap(~dayOfWeek_int) + coord_quickmap() + theme_bw() + ggtitle('GPS points in training beat')
+  
+  disconneted <- dbDisconnect(conDB)
+  return(list(dowCount = recordsPerDow, gpsTraces = p))
+}
+analysisOutput <- analyseBeat(beatOutput$chosenBeatGroup)
+analysisOutput$dowCount
+analysisOutput$gpsTraces
+```
+
+The above figures confirm that the service day for the beat is Friday, though there does seem to be days where the streets are also traversed. At this stage it is unkown if this is due to vehicles simply travelling through the area on those days, or if waste collection took place, most likely because not all waste could be collected on the Thursday. It's also possible that the area is mixed and consists of households to be collected on Tuesdays and bulk containers collected on other days. Saturdays and Sundays show little travel in the area, as would be the case for residential areas.
+
+## Single outsourced beat analysis
+
+The analysis is repeated for a randomly chosen outsourced beat:
+
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+set.seed(31)
+beatOutsourcedData <- read.csv('beatGroupDatasetTraining.csv') %>% filter(serviceProvider == 'Outsourced')
+
+beatOutsourcedOutput <- isolateBeat(beatOutsourcedData)
+beatOutsourcedOutput$beatInfo
+beatOutsourcedOutput$beatLocation
+beatOutsourcedOutput$chosenBeatGroup
+```
+
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+analysisOutsourcedOutput <- analyseBeat(beatOutsourcedOutput$chosenBeatGroup)
+analysisOutsourcedOutput$dowCount
+analysisOutsourcedOutput$gpsTraces
+```
+
+Even though the collection day is indicated as Wednesday, there is no prominint increase in the number of GPS records for the day. This would occur if curbside collection is not done by the vehicle, seeing that it is outsourced. The waste is most likely collected and transferred to on-site bulk containers by the outsourced party, and from there collected by the City's waste collection vehicles, and not neccessarely on the indicated collection day. This may be due to the collection day referring to when residents can expect their waste to be collected.
+
+Interisting is the GPS distributions, where there are clear straightlines in certain instances, which indicate more than just random GPS point jitter. This should be investigated.
+
+## Combined beat analysis
+
+The following code generates masp of the GPS record counts for all service groups:
+
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+beatDataAll <- read.csv('beatGroupDatasetTraining.csv')
+beatDataAll$nRecords.x = NULL
+beatDataAll$nRecords.y = NULL
+
+dateData <- read.csv('dateDatasetTraining.csv')
+dateData$nRecords = NULL  
+
+dbPath <- '../data/dataBaseStructure/dbs/CapeTown_Waste_mod.db'
+conDB <- dbConnect(RSQLite::SQLite(), dbname = dbPath)
+  
+q <- 'SELECT * FROM ServiceDate_has_WasteServiceBeatGroup'
+beatDateRecords <- dbGetQuery(conDB, q) %>% inner_join(dateData, by = c('ServiceDate_idServiceDates' = 'idServiceDates')) %>% inner_join(beatDataAll, by = c('WasteServiceBeatGroup_idWasteServiceBeatGroup' = 'idWasteServiceBeatGroup'))
+
+beatRecordsPerDow <- beatDateRecords %>% group_by(dayOfWeek_int, WasteServiceBeatGroup_idWasteServiceBeatGroup) %>% summarise(nRecordsTotal = sum(nRecords))
+
+beatRecordsPerDowSum <- beatRecordsPerDow %>% group_by(WasteServiceBeatGroup_idWasteServiceBeatGroup) %>% summarise(nRecordsComb = sum(nRecordsTotal)) 
+
+beatRecordsPerDow <- left_join(beatRecordsPerDow, beatRecordsPerDowSum, by = c('WasteServiceBeatGroup_idWasteServiceBeatGroup' = 'WasteServiceBeatGroup_idWasteServiceBeatGroup')) %>% mutate(nCountNorm = nRecordsTotal/nRecordsComb) %>% left_join(beatDataAll, by = c("WasteServiceBeatGroup_idWasteServiceBeatGroup" = "idWasteServiceBeatGroup"))
+
+q <- 'SELECT * FROM WasteServiceBoundaryPoint WHERE WasteServiceBeat_idWasteServiceBeatGroup = :a'
+boundaryRecords <- dbGetQuery(conDB, q, params = list(a = beatDataAll$idWasteServiceBeatGroup))
+
+beatRecordsPerDowBoundary <- right_join(beatRecordsPerDow, boundaryRecords, by = c('WasteServiceBeatGroup_idWasteServiceBeatGroup' = 'WasteServiceBeat_idWasteServiceBeatGroup'))
+
+  p <- ggplot(beatRecordsPerDowBoundary, aes(x = long, y = lat, group = WasteServiceBeatGroup_idWasteServiceBeatGroup, fill = nRecordsTotal)) + geom_polygon() + facet_wrap(~dayOfWeek_int) + coord_quickmap() + theme_bw() + ggtitle('Number of GPS points in training beats per DOW')
+  p
+  
+  disconneted <- dbDisconnect(conDB)
+```
+
+The above figure does not reveal much since it is dominated by beats that are visited often, such as beats that surround the vehicle depot, to which all vehicles have to return, or that surround main roads through which vehicles often travel. One approach is to normalise the number of records per day of week and to visualise the difference between the number of records for the different day of week. To do so the total number of records the day of week is divided by the total number of records for that beat, calculated previously. 
+
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+  p <- ggplot(beatRecordsPerDowBoundary, aes(x = long, y = lat, group = WasteServiceBeatGroup_idWasteServiceBeatGroup, fill = nCountNorm)) + geom_polygon() + facet_wrap(~dayOfWeek_int) + coord_quickmap() + theme_bw() + ggtitle('Fraction of GPS points in training beats per DOW')
+  p
+```
+
+```{r, echo=FALSE}
+serviceCountPlot <- function(boundaryCounts, dow, serviceDay = '')
+{
+  p <- boundaryCounts %>% filter(dayOfWeek_int == dow) %>% ggplot(aes(x = long, y = lat, group = WasteServiceBeatGroup_idWasteServiceBeatGroup, fill = nCountNorm)) + geom_polygon() + coord_quickmap() + theme_bw() + ggtitle(sprintf('Fraction of GPS points in training beats per DOW = %i', dow)) + geom_path(data = filter(boundaryCounts, collectionDay == serviceDay), col = "red")
+  return(p)
+}
+```
+
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+serviceCountPlot(beatRecordsPerDowBoundary, dow = 1, serviceDay = 'Monday')
+```
+
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+serviceCountPlot(beatRecordsPerDowBoundary, dow = 2, serviceDay = 'Tuesday')
+```
+
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+serviceCountPlot(beatRecordsPerDowBoundary, dow = 3, serviceDay = 'Wednesday')
+```
+
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+serviceCountPlot(beatRecordsPerDowBoundary, dow = 4, serviceDay = 'Thursday')
+```
+
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+serviceCountPlot(beatRecordsPerDowBoundary, dow = 5, serviceDay = 'Friday')
+```
+
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+serviceCountPlot(filter(beatRecordsPerDowBoundary, collectionDay == "Monday" & serviceProvider == "Departmental" ) , dow = 1)
+```
+
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+serviceCountPlot(filter(beatRecordsPerDowBoundary, collectionDay == "Tuesday" & serviceProvider == "Departmental" ) , dow = 2)
+```
+
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+serviceCountPlot(filter(beatRecordsPerDowBoundary, collectionDay == "Wednesday" & serviceProvider == "Departmental" ) , dow = 3)
+```
+
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+serviceCountPlot(filter(beatRecordsPerDowBoundary, collectionDay == "Thursday" & serviceProvider == "Departmental" ) , dow = 4)
+```
+
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+serviceCountPlot(filter(beatRecordsPerDowBoundary, collectionDay == "Friday" & serviceProvider == "Departmental" ) , dow = 5)
+```
+
+## Easy beats
+
+There is one issue to deal with. Groups with only a few points may have very high normalisation scores on certain days. This is due to chance not due to a pattern. To analyse this, the total number of records for the beat on a log-10 scale is plotted against the normalised score per day of week. The total number of records instead of the total records per day of week is used since a service beat with a total of 10000 only having 1 records on Sunday is not due to chance.
+
+```{r}
+beatRecordsPerDow %>% ggplot(aes(x = nRecordsComb, y = nCountNorm)) + geom_point(alpha=0.2) + scale_x_log10() + theme_bw() +
+  geom_point(data = filter(beatRecordsPerDow, nCountNorm > 0.82 & nRecordsComb > 1000), col = "red")
+```
+
+As expected there are a few lowly visited beats with extreme probabilities, but most of the beats have in excess of 100 points. Focussing on beats with more than 1000 points may be considered. The highly visited beats with extreme probabilities should prove interisting and easy to focus on since they should represent areas that are only serviced and not travelled through for other reasons. The four beats with heavy traffic and high normalisation scores, shown in red above, should be isolated for analysis.
+
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+special <- beatRecordsPerDow %>% filter(nCountNorm > 0.82 & nRecordsComb > 1000)
+special
+
+beatData <- read.csv('beatGroupDatasetTraining.csv')
+```
+
+```{r, , echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+beatOutput <- isolateBeat(beatData, random = FALSE, id = special$WasteServiceBeatGroup_idWasteServiceBeatGroup[1])
+beatOutput$beatInfo
+beatOutput$beatLocation
+```
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+analysisOutput <- analyseBeat(beatOutput$chosenBeatGroup, days = 1:5)
+analysisOutput$dowCount
+analysisOutput$gpsTraces
+```
+
+```{r, , echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+beatOutput <- isolateBeat(beatData, random = FALSE, id = special$WasteServiceBeatGroup_idWasteServiceBeatGroup[2])
+beatOutput$beatInfo
+beatOutput$beatLocation
+```
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+analysisOutput <- analyseBeat(beatOutput$chosenBeatGroup, days = 1:5)
+analysisOutput$dowCount
+analysisOutput$gpsTraces
+```
+
+```{r, , echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+beatOutput <- isolateBeat(beatData, random = FALSE, id = special$WasteServiceBeatGroup_idWasteServiceBeatGroup[3])
+beatOutput$beatInfo
+beatOutput$beatLocation
+```
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+analysisOutput <- analyseBeat(beatOutput$chosenBeatGroup, days = 1:5)
+analysisOutput$dowCount
+analysisOutput$gpsTraces
+```
+
+```{r, , echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+beatOutput <- isolateBeat(beatData, random = FALSE, id = special$WasteServiceBeatGroup_idWasteServiceBeatGroup[4])
+beatOutput$beatInfo
+beatOutput$beatLocation
+```
+```{r, echo=FALSE, tidy=FALSE, fig.width = 9, fig.height = 9, dpi = 144}
+analysisOutput <- analyseBeat(beatOutput$chosenBeatGroup, days = 1:5)
+analysisOutput$dowCount
+analysisOutput$gpsTraces
+```
+
+The service day of beat `r special$WasteServiceBeatGroup_idWasteServiceBeatGroup[1]` is on a Tuesday. Next we analyse the beat over each Tuesday in the study period, focussing on the vehicle travelling in the area to identify the service vehicles.
+
+## Vehicle service beat analysis
+
+For this part of the analysis the number of unique vehicle visits for the beat on its service day is analysed.
+
+```{r}
+beatID <- special$WasteServiceBeatGroup_idWasteServiceBeatGroup[1]
+dateData <- read.csv('dateDatasetTraining.csv')
+
+dbPath <- '../data/dataBaseStructure/dbs/CapeTown_Waste_mod.db'
+conDB <- dbConnect(RSQLite::SQLite(), dbname = dbPath)
+  
+q <- 'SELECT * FROM ConvertedGpsRecord WHERE WasteServiceBeatGroup_idWasteServiceBeatGroup == :a'
+
+beatGpsRecords <- dbGetQuery(conDB, q, params = list(a = beatID)) %>% left_join(dateData, by = c('ServiceDates_idServiceDates' = 'idServiceDates')) %>% filter(dayOfWeek_int == 2) %>% mutate(date_time = paste(date, time)) %>% arrange(date_time)
+
+nUniqueVehiclesPerDay <- beatGpsRecords %>% group_by(date, WasteVehicles_idWasteVehicles) %>% summarise(n())
+
+ggplot(nUniqueVehiclesPerDay, aes(x = date, y = `n()`, col = as.factor(WasteVehicles_idWasteVehicles))) + geom_point()  + theme_bw() + geom_hline(yintercept = 200, col = "red") + coord_flip()
+
+nUniqueVehiclesPerDay %>% filter(`n()` > 200) %>% distinct()
+
+disconneted <- dbDisconnect(conDB)
+```
+
+The service vehicle for the beat is vehicle 285, except on 2014-03-25 on which vehicle 377 serviced the area. Given this information the next step is to calculate, for each day, the time at which the vehicle first entered the service area, the number of times and time at which the vehicle existed and re-entered the service area, the total distance travelled by the vehicle in the service area, and the total time spent in the service area.
+
+## Vehicle analysis
+
+With the service vehicle identified as vehicle 285, we can now focus on the specific vehicle to determine how effectively it is servicing the arae. For each day we look at the vehicle's entire travel and then see how much travel was for servicing the area, how much was for servicing other areas, and how much was for travelling between service areas, the vehicle depot, and dumpsites.
+
+First we visualise all vehicle's routes on the service days:
+
+```{r}
+dbPath <- '../data/dataBaseStructure/dbs/CapeTown_Waste_mod.db'
+conDB <- dbConnect(RSQLite::SQLite(), dbname = dbPath)
+  
+q <- 'SELECT * FROM ConvertedGpsRecord WHERE WasteVehicles_idWasteVehicles == %i'
+q <- sprintf(q, 285)
+
+vehicleRecords <- dbGetQuery(conDB, q) %>% left_join(dateData, by = c('ServiceDates_idServiceDates' = 'idServiceDates')) %>% filter(dayOfWeek_int == 2) %>% mutate(date_time = paste(date, time)) %>% arrange(date_time) %>% mutate(time_con = hms(time))
+
+q <- 'SELECT * FROM WasteServiceBoundaryPoint'
+q <- sprintf(q, beatID)
+
+beatBoundary <-  dbGetQuery(conDB, q)
+
+recordsPerServiceDay <- vehicleRecords %>% group_by(date) %>% summarise(nRecordsDate = n()) 
+ggplot(vehicleRecords, aes(x = date)) + geom_bar() + theme_bw() + coord_flip()
+
+dayRoute <- function(vehicleRecords, beatBoundary, analysisDay, beatBoundaryID)
+{
+  dispose <- read.csv('disposalFacilities.csv')
+  subday <- vehicleRecords %>% filter(date == analysisDay)
+  beatBoundaryAll <- filter(beatBoundary, WasteServiceBeat_idWasteServiceBeatGroup %in%  subday$WasteServiceBeatGroup_idWasteServiceBeatGroup)
+  start_end_point <- subday[c(1,nrow(subday)), ]
+  gplot <- ggplot(subday, aes(x = long, y = lat)) + geom_path(data = beatBoundaryAll, aes(group = WasteServiceBeat_idWasteServiceBeatGroup), col = "grey", size = 0.4) + geom_path() + coord_quickmap() + theme_bw() + ggtitle(sprintf('Vehicle travel on day %s', analysisDay)) + geom_path(data = filter(beatBoundary, WasteServiceBeat_idWasteServiceBeatGroup == beatBoundaryID), aes(x = long, y = lat), col = "red") + geom_point(data = start_end_point, col = "red")  + geom_point(data = dispose, col = "blue")
+  return(gplot)
+}
+
+for (d in recordsPerServiceDay$date)
+{
+  print(dayRoute(vehicleRecords, beatBoundary, d, beatID))
+}
+```
+
+Next we can calculate key indicators for the vehicle  for each day, specifically the time that the vehicle was in operation and the distance travelled by the vehicle. This requires that the GPS records be cleaned from outliers and jitter.
+
+```{r}
+shiftVectorForward <- function(shiftVector)
+{
+  # Shifts vector forward, so that point i-1 is relocated to point i.
+  # First point repeats, and last point is not used.
+  # Used to calculate distance, speed, time, etc. between consequtive points (between i-1 and i).
+  nPoints <- length(shiftVector)
+  newVector <- c(shiftVector[1], shiftVector[1:(nPoints - 1)])
+  return(newVector)
+}
+
+calcDeltaD <- function(pos_x, pos_y)
+{
+  # Calculate the distance between points i - 1 and i, and allocated it to point i. 
+  # Returns a vector of the distances.
+  # pos_x and pos_y has to be longitude (pos_x) and latitude (pos_y) degrees 
+  # and ordered according to time. Requires the geosphere package.
+  nPoints = length(pos_x)
+  pos_x_prev = shiftVectorForward(pos_x)
+  pos_y_prev = shiftVectorForward(pos_y)
+  matrixPointsPrev = matrix(c(pos_x_prev, pos_y_prev), nrow = nPoints, ncol = 2)
+  matrixPointsCurrent = matrix(c(pos_x, pos_y), nrow = nPoints, ncol = 2)
+  distanceDelta = distGeo(matrixPointsPrev, matrixPointsCurrent)[2:nPoints]
+  return(distanceDelta)
+}
+
+calcDeltaD_ref <- function(pos_x, pos_y, ref_x, ref_y)
+{
+  # Calculate the distance between points i and a reference point k. 
+  # Returns a vector of the distances.
+  # pos_x and pos_y has to be longitude (pos_x) and latitude (pos_y) degrees 
+  # Requires the geosphere package.
+  nPoints = length(pos_x)
+  matrixPointsPrev = matrix(c(rep(ref_x, nPoints), rep(ref_y, nPoints)), nrow = nPoints, ncol = 2)
+  matrixPointsCurrent = matrix(c(pos_x, pos_y), nrow = nPoints, ncol = 2)
+  distanceDelta = distGeo(matrixPointsPrev, matrixPointsCurrent)
+  return(distanceDelta)
+}
+
+identifyOutliers <- function(deltaT)
+{
+  b <- boxplot(deltaT)
+  upperBound <- b$stats[[5]]
+  outLiers <- which((deltaT > upperBound)  == TRUE)
+  return(outLiers)
+}
+
+analysisDay <- recordsPerServiceDay$date[1]
+subday <- subset(vehicleRecords, date == analysisDay)
+
+subday$time_con <- strptime(subday$time, format = '%T')
+subday <- subday[order(subday$time_con),]
+
+time_con2 <- as.numeric(subday$time_con)
+d <- diff(time_con2)
+
+timeDelta_sec <- as.numeric(diff(subday$time_con), units = "secs")
+barplot(timeDelta_sec)
+summary(timeDelta_sec)
+hist(timeDelta_sec)
+boxplot(timeDelta_sec)
+
+subday2 <- subday[c(TRUE, timeDelta_sec > 1),]
+timeDelta_sec <- as.numeric(diff(subday2$time_con), units = "secs")
+barplot(timeDelta_sec)
+summary(timeDelta_sec)
+hist(timeDelta_sec)
+boxplot(timeDelta_sec)
+
+distDiff_m <- calcDeltaD(subday2$long, subday2$lat)
+barplot(distDiff_m)
+summary(distDiff_m)
+hist(distDiff_m)
+boxplot(distDiff_m)
+
+speed_ms <- distDiff_m/timeDelta_sec
+barplot(speed_ms)
+summary(speed_ms)
+hist(speed_ms)
+boxplot(speed_ms)
+
+
+total_distance <- sum(distDiff_m)/1000
+start_end_point <- subday2[c(1,nrow(subday2)), ]
+diff <- calcDeltaD(start_end_point$long, start_end_point$lat)
+diff
+
+dispose <- read.csv('disposalFacilities.csv')
+
+  gplot <- ggplot(subday2, aes(x = long, y = lat)) + geom_path() + coord_quickmap() + theme_bw() + ggtitle(sprintf('Vehicle travel on day %s', analysisDay)) + geom_point(data = start_end_point, col = "red") + geom_point(data = dispose, col = "blue")
+  gplot
+  
+for (i in 1:nrow(dispose))
+{
+  distTo <- calcDeltaD_ref(pos_x = subday2$long, pos_y = subday2$lat, ref_x = dispose$long[i], ref_y = dispose$lat[i])
+  plot(distTo, ylim = c(0, max(distTo)), main = dispose$Waste.Entering.Disposal.Facilities[i])
+  print(summary(distTo))
+}
+  
+  
+ i = 7
+ 
+ subday2$WasteServiceBeatGroup_idWasteServiceBeatGroup
+ 
+   distTo <- calcDeltaD_ref(pos_x = subday2$long, pos_y = subday2$lat, ref_x = dispose$long[i], ref_y = dispose$lat[i])
+  plot(distTo, ylim = c(0, max(distTo)), main = dispose$Waste.Entering.Disposal.Facilities[i])
+  print(summary(distTo))
+  
+subday2$calcDeltaD_ref <- distTo 
+
+ggplot(subday2, aes(x = time_con, y = calcDeltaD_ref, col = as.factor(WasteServiceBeatGroup_idWasteServiceBeatGroup))) + geom_point() + theme_bw()
+```
+
+Using functions:
+
+```{r}
+findIF <-  function(disposelSite, subdayGPS)
+{
+  minDistOpt <- 1000000
+  minDistI <- 0
+  distToVec <- c()
+  for (i in 1:nrow(dispose))
+  {
+    distTo <- calcDeltaD_ref(pos_x = subdayGPS$long, pos_y = subdayGPS$lat, ref_x = disposelSite$long[i], ref_y = disposelSite$lat[i])
+    if (min(distTo) < minDistOpt)
+    {
+      minDistI <- i
+      minDistOpt <- min(distTo)
+      distToVec <- distTo
+    }
+  }
+  return(list(minDistI, distToVec))
+}
+
+analysisDay <- "2014-04-08" #recordsPerServiceDay$date[19]
+
+subday <- subset(vehicleRecords, date == analysisDay)
+ggplot(subday, aes(x = as.factor(WasteServiceBeatGroup_idWasteServiceBeatGroup))) + geom_bar() + theme_bw()
+
+#nRecordsServiceArea <- vehicleRecords %>% group_by(WasteServiceBeatGroup_idWasteServiceBeatGroup, date) %>% #summarise(nRecords = n()) 
+#ggplot(nRecordsServiceArea, aes(x = date, y = nRecords)) + geom_boxplot() + coord_flip() + theme_bw()
+
+subday$time_con <- strptime(subday$time, format = '%T')
+subday <- subday[order(subday$time_con),]
+
+time_con2 <- as.numeric(subday$time_con)
+d <- diff(time_con2)
+
+timeDelta_sec <- as.numeric(diff(subday$time_con), units = "secs")
+
+subday2 <- subday[c(TRUE, timeDelta_sec > 1),]
+timeDelta_sec <- as.numeric(diff(subday2$time_con), units = "secs")
+
+distDiff_m <- calcDeltaD(subday2$long, subday2$lat)
+speed_ms <- distDiff_m/timeDelta_sec
+
+total_distance <- sum(distDiff_m)/1000
+start_end_point <- subday2[c(1,nrow(subday2)), ]
+
+
+subday2$depot_distance_start <- calcDeltaD_ref(pos_x = subday2$long, pos_y = subday2$lat, ref_x = subday2$long[1], ref_y = subday2$lat[1])
+
+subday2$depot_distance_end <- calcDeltaD_ref(pos_x = subday2$long, pos_y = subday2$lat, ref_x = subday2$long[nrow(subday2)], ref_y = subday2$lat[nrow(subday2)])
+
+startIndex <- which(subday2$depot_distance_start > 150)[1]
+
+endIndices <- which(subday2$depot_distance_end[startIndex:nrow(subday2)] < 150)
+indexRange <- max(endIndices) - min(endIndices)
+
+if (indexRange > 100)
+{
+  max_diff <- diff(endIndices)
+  max_diff_index <- which(max_diff == max(max_diff))
+  endIndex <- endIndices[max_diff_index + 1]
+}else{
+  endIndex <- which(subday2$depot_distance_end[startIndex:nrow(subday2)] < 150)[1]
+}
+
+totalTime <- as.numeric(as.duration(subday2$time_con[endIndex] - subday2$time_con[startIndex])/3600)
+
+  gplot <- ggplot(subday2, aes(x = long, y = lat)) + geom_path() + coord_quickmap() + theme_bw() + ggtitle(sprintf('Vehicle travel on day %s', analysisDay)) + geom_point(data = start_end_point, col = "red") + geom_point(data = dispose, col = "blue")
+  gplot
+  
+ifResults <- findIF(dispose, subday2)
+subday2$calcDeltaD_ref <- ifResults[[2]] 
+
+ggplot(subday2, aes(x = time_con, y = calcDeltaD_ref)) + geom_point() + theme_bw()
+
+chainIndexed <- which(subday2$calcDeltaD_ref < 150)
+
+nBreaks <- length(chainIndexed)
+
+subday2_chain_time <- c()
+subday2_chain_dist <- c()
+
+subday2_chain <- subset(subday2[1:chainIndexed[1],], WasteServiceBeatGroup_idWasteServiceBeatGroup == beatID)
+  if (nrow(subday2_chain) > 0)
+  {
+    subday2_chain_time <- c(subday2_chain_time, as.duration(max(subday2_chain$time_con) - min(subday2_chain$time_con)))
+    subday2_chain_dist <- c(subday2_chain_dist, calcDeltaD(subday2_chain$long, subday2_chain$lat))
+  }
+for (i in 2:nBreaks)
+{
+  subday2_chain <- subset(subday2[(chainIndexed[i-1]):chainIndexed[i],], WasteServiceBeatGroup_idWasteServiceBeatGroup == beatID)
+  if (nrow(subday2_chain) > 0)
+  {
+    subday2_chain_time <- c(subday2_chain_time, as.duration(max(subday2_chain$time_con) - min(subday2_chain$time_con)))
+    subday2_chain_dist <- c(subday2_chain_dist, calcDeltaD(subday2_chain$long, subday2_chain$lat))
+  }
+}
+
+subday2_chain <- subset(subday2[(chainIndexed[nBreaks]):nrow(subday2),], WasteServiceBeatGroup_idWasteServiceBeatGroup == beatID)
+  if (nrow(subday2_chain) > 0)
+  {
+    subday2_chain_time <- c(subday2_chain_time, as.duration(max(subday2_chain$time_con) - min(subday2_chain$time_con)))
+    subday2_chain_dist <- c(subday2_chain_dist, calcDeltaD(subday2_chain$long, subday2_chain$lat))
+  }
+
+subday2_chain_time
+tTotal <- sum(subday2_chain_time)/60/60
+totalDeadTime <- totalTime - tTotal
+timeUtilisation <- tTotal/totalTime
+kmTotal <- sum(subday2_chain_dist)/1000
+total_dead <- total_distance - kmTotal
+distanceUtilisation <- kmTotal/total_distance
+
+kostPerKm <- 20
+kostPerHour <- 87.5 + 3*40
+kmCost <- total_distance*kostPerKm
+timeCost <- totalTime*kostPerHour
+totalCost <- kmCost + timeCost
+
+serviceKmCost <- kmTotal*kostPerKm
+serviceTimeCost <- tTotal*kostPerHour
+serviceTotal <- serviceKmCost + serviceTimeCost
+
+tTotal
+totalTime
+totalDeadTime
+timeUtilisation
+
+kmTotal
+total_distance
+total_dead
+distanceUtilisation
+
+kmCost
+timeCost
+totalCost
+
+serviceKmCost
+serviceTimeCost
+serviceTotal
+
+serviceTotal/totalCost
+```
+
+More functions:
+
+```{r}
+nRecordsServiceArea <- vehicleRecords %>% group_by(WasteServiceBeatGroup_idWasteServiceBeatGroup, date) %>% summarise(nRecords = n()) 
+ggplot(nRecordsServiceArea, aes(x = date, y = nRecords)) + geom_boxplot() + coord_flip() + theme_bw()
+
+ggplot(nRecordsServiceArea, aes(x = as.factor(WasteServiceBeatGroup_idWasteServiceBeatGroup), y = nRecords)) + geom_boxplot() + theme_bw() + coord_flip()
+
+beatCost <- function(vehicleRec, anDay, beatI, dispose, kostPerKm = 20, kostPerHour = 210) #kostPerHour = 87.5 + 3*40
+{
+  subday <- subset(vehicleRec, date == anDay)
+  
+  if (nrow(subday) < 100){return(c())}
+  
+  subday$time_con <- strptime(subday$time, format = '%T')
+  subday <- subday[order(subday$time_con),]
+  
+  time_con2 <- as.numeric(subday$time_con)
+  d <- diff(time_con2)
+  
+  timeDelta_sec <- as.numeric(diff(subday$time_con), units = "secs")
+  
+  subday2 <- subday[c(TRUE, timeDelta_sec > 1),]
+  timeDelta_sec <- as.numeric(diff(subday2$time_con), units = "secs")
+  
+  distDiff_m <- calcDeltaD(subday2$long, subday2$lat)
+  speed_ms <- distDiff_m/timeDelta_sec
+  
+  total_distance <- sum(distDiff_m)/1000
+  start_end_point <- subday2[c(1,nrow(subday2)), ]
+  
+  
+  subday2$depot_distance_start <- calcDeltaD_ref(pos_x = subday2$long, pos_y = subday2$lat, ref_x = subday2$long[1], ref_y = subday2$lat[1])
+  
+  subday2$depot_distance_end <- calcDeltaD_ref(pos_x = subday2$long, pos_y = subday2$lat, ref_x = subday2$long[nrow(subday2)], ref_y = subday2$lat[nrow(subday2)])
+  
+  startIndex <- which(subday2$depot_distance_start > 150)[1]
+
+  endIndices <- which(subday2$depot_distance_end[startIndex:nrow(subday2)] < 150)
+  indexRange <- max(endIndices) - min(endIndices)
+  
+  if (indexRange > 100)
+  {
+    max_diff <- diff(endIndices)
+    max_diff_index <- which(max_diff == max(max_diff))
+    endIndex <- endIndices[max_diff_index + 1]
+  }else{
+    endIndex <- which(subday2$depot_distance_end[startIndex:nrow(subday2)] < 150)[1]
+  }
+
+  totalTime <- as.numeric(as.duration(subday2$time_con[endIndex] - subday2$time_con[startIndex])/3600)
+  
+  ifResults <- findIF(dispose, subday2)
+  subday2$calcDeltaD_ref <- ifResults[[2]] 
+  
+  chainIndexed <- which(subday2$calcDeltaD_ref < 150)
+  
+  nBreaks <- length(chainIndexed)
+  
+  subday2_chain_time <- c()
+  subday2_chain_dist <- c()
+  
+  subday2_chain <- subset(subday2[1:chainIndexed[1],], WasteServiceBeatGroup_idWasteServiceBeatGroup == beatI)
+  if (nrow(subday2_chain) > 0)
+  {
+    subday2_chain_time <- c(subday2_chain_time, as.duration(max(subday2_chain$time_con) - min(subday2_chain$time_con)))
+    subday2_chain_dist <- c(subday2_chain_dist, calcDeltaD(subday2_chain$long, subday2_chain$lat))
+  }
+  for (i in 2:nBreaks)
+  {
+    subday2_chain <- subset(subday2[(chainIndexed[i-1]):chainIndexed[i],], WasteServiceBeatGroup_idWasteServiceBeatGroup == beatI)
+    if (nrow(subday2_chain) > 0)
+    {
+      subday2_chain_time <- c(subday2_chain_time, as.duration(max(subday2_chain$time_con) - min(subday2_chain$time_con)))
+      subday2_chain_dist <- c(subday2_chain_dist, calcDeltaD(subday2_chain$long, subday2_chain$lat))
+    }
+  }
+  
+  subday2_chain <- subset(subday2[(chainIndexed[nBreaks]):nrow(subday2),], WasteServiceBeatGroup_idWasteServiceBeatGroup == beatI)
+  if (nrow(subday2_chain) > 0)
+  {
+    subday2_chain_time <- c(subday2_chain_time, as.duration(max(subday2_chain$time_con) - min(subday2_chain$time_con)))
+    subday2_chain_dist <- c(subday2_chain_dist, calcDeltaD(subday2_chain$long, subday2_chain$lat))
+  }
+  
+  tTotal <- sum(subday2_chain_time)/60/60
+  totalDeadTime <- totalTime - tTotal
+  timeUtilisation <- tTotal/totalTime
+  kmTotal <- sum(subday2_chain_dist)/1000
+  total_dead <- total_distance - kmTotal
+  distanceUtilisation <- kmTotal/total_distance
+  
+  kmCost <- total_distance*kostPerKm
+  timeCost <- totalTime*kostPerHour
+  totalCost <- kmCost + timeCost
+  
+  serviceKmCost <- kmTotal*kostPerKm
+  serviceTimeCost <- tTotal*kostPerHour
+  serviceTotal <- serviceKmCost + serviceTimeCost
+  
+  costFraction <- serviceTotal/totalCost
+  
+  output = list(serviceTime = tTotal,
+                totalTime = totalTime,
+                totalDeadTime = totalDeadTime,
+                timeUtilisation = timeUtilisation,
+                serviceKm = kmTotal,
+                totalKm = total_distance,
+                totalDeadKm = total_dead,
+                distanceUtilisation = distanceUtilisation,
+                travelCost = kmCost,
+                timeCost = timeCost,
+                totalCost = totalCost,
+                serviceTravelCost = serviceKmCost,
+                serviceTimeCost = serviceTimeCost,
+                serviceTotalCost = serviceTotal,
+                serviceCostFraction = costFraction)
+  
+  output2 = c(tTotal,
+              totalTime,
+              totalDeadTime,
+              timeUtilisation,
+              kmTotal,
+              total_distance,
+              total_dead,
+              distanceUtilisation,
+              kmCost,
+              timeCost,
+              totalCost,
+              serviceKmCost,
+              serviceTimeCost,
+              serviceTotal,
+              costFraction)
+  
+  return(output2)
+}
+dispose <- read.csv('disposalFacilities.csv')
+nDays <- nrow(recordsPerServiceDay)
+outputFrame <- data.frame(beatID = rep(0, nDays),
+                          analysisDay = rep(NA, nDays),
+                          serviceTime = rep(0, nDays),
+                          totalTime = rep(0, nDays),
+                          totalDeadTime = rep(0, nDays),
+                          timeUtilisation = rep(NA, nDays),
+                          serviceKm = rep(0, nDays),
+                          totalKm = rep(0, nDays),
+                          totalDeadKm = rep(0, nDays),
+                          distanceUtilisation = rep(NA, nDays),
+                          travelCost = rep(0, nDays),
+                          timeCost = rep(0, nDays),
+                          totalCost = rep(0, nDays),
+                          serviceTravelCost = rep(0, nDays),
+                          serviceTimeCost = rep(0, nDays),
+                          serviceTotalCost = rep(0, nDays),
+                          serviceCostFraction = rep(0, nDays))
+
+beatID <- 679 #343 #345, 679
+for (i in 1:nDays)
+{
+  print(paste(i, 'of', nDays))
+  analysisDay <- as.character(recordsPerServiceDay$date[i])
+  costInfo <- beatCost(vehicleRecords, analysisDay, beatID, dispose)
+  if (length(costInfo) > 0)
+  {
+    outputFrame[i,] <- c(beatID, analysisDay, costInfo)
+  }else{
+    outputFrame[i,c(1:2)] <- c(beatID, analysisDay)
+  }
+}
+outputFrame$serviceTotalCost <- as.numeric(outputFrame$serviceTotalCost)
+outputFrame$totalCost <- as.numeric(outputFrame$totalCost)
+View(outputFrame)
+
+ggplot(outputFrame, aes(x = analysisDay, y = serviceTotalCost)) + geom_bar(stat = "identity") + theme_bw() + coord_flip()
+summary(as.integer(outputFrame$totalCost))
+
+ggplot(outputFrame, aes(x = analysisDay, y = totalCost)) + geom_bar(stat = "identity") + theme_bw() + coord_flip()
+summary(as.integer(outputFrame$totalCost))
+```
+
+
+## Automated analysis
+
+More functional, from scratch that takes as input a vehicleID, serviceBeatID and the beat's service day, and calculates the service cost of the beat. Only works with beats that have clearly defined service days with little general deadheading of the vehicle through the service area.
+
+```{r}
+shiftVectorForward <- function(shiftVector)
+{
+  # Shifts vector forward, so that point i-1 is relocated to point i.
+  # First point repeats, and last point is not used.
+  # Used to calculate distance, speed, time, etc. between consequtive points (between i-1 and i).
+  nPoints <- length(shiftVector)
+  newVector <- c(shiftVector[1], shiftVector[1:(nPoints - 1)])
+  return(newVector)
+}
+
+calcDeltaD <- function(pos_x, pos_y)
+{
+  # Calculate the distance between points i - 1 and i, and allocated it to point i. 
+  # Returns a vector of the distances.
+  # pos_x and pos_y has to be longitude (pos_x) and latitude (pos_y) degrees 
+  # and ordered according to time. Requires the geosphere package.
+  nPoints = length(pos_x)
+  pos_x_prev = shiftVectorForward(pos_x)
+  pos_y_prev = shiftVectorForward(pos_y)
+  matrixPointsPrev = matrix(c(pos_x_prev, pos_y_prev), nrow = nPoints, ncol = 2)
+  matrixPointsCurrent = matrix(c(pos_x, pos_y), nrow = nPoints, ncol = 2)
+  distanceDelta = distGeo(matrixPointsPrev, matrixPointsCurrent)[2:nPoints]
+  return(distanceDelta)
+}
+
+calcDeltaD_ref <- function(pos_x, pos_y, ref_x, ref_y)
+{
+  # Calculate the distance between points i and a reference point k. 
+  # Returns a vector of the distances.
+  # pos_x and pos_y has to be longitude (pos_x) and latitude (pos_y) degrees 
+  # Requires the geosphere package.
+  nPoints = length(pos_x)
+  matrixPointsPrev = matrix(c(rep(ref_x, nPoints), rep(ref_y, nPoints)), nrow = nPoints, ncol = 2)
+  matrixPointsCurrent = matrix(c(pos_x, pos_y), nrow = nPoints, ncol = 2)
+  distanceDelta = distGeo(matrixPointsPrev, matrixPointsCurrent)
+  return(distanceDelta)
+}
+
+identifyOutliers <- function(deltaT)
+{
+  b <- boxplot(deltaT)
+  upperBound <- b$stats[[5]]
+  outLiers <- which((deltaT > upperBound)  == TRUE)
+  return(outLiers)
+}
+
+findIF <-  function(disposelSite, subdayGPS)
+{
+  minDistOpt <- 1000000
+  minDistI <- 0
+  distToVec <- c()
+  for (i in 1:nrow(dispose))
+  {
+    distTo <- calcDeltaD_ref(pos_x = subdayGPS$long, pos_y = subdayGPS$lat, ref_x = disposelSite$long[i], ref_y = disposelSite$lat[i])
+    if (min(distTo) < minDistOpt)
+    {
+      minDistI <- i
+      minDistOpt <- min(distTo)
+      distToVec <- distTo
+    }
+  }
+  return(list(minDistI, distToVec))
+}
+
+beatCost <- function(vehicleRec, anDay, beatI, dispose, kostPerKm = 20, kostPerHour = 210) #kostPerHour = 87.5 + 3*40
+{
+  subday <- subset(vehicleRec, date == anDay)
+  
+  if (nrow(subday) < 100){return(c())}
+  
+  subday$time_con <- strptime(subday$time, format = '%T')
+  subday <- subday[order(subday$time_con),]
+  
+  time_con2 <- as.numeric(subday$time_con)
+  d <- diff(time_con2)
+  
+  timeDelta_sec <- as.numeric(diff(subday$time_con), units = "secs")
+  
+  subday2 <- subday[c(TRUE, timeDelta_sec > 1),]
+  timeDelta_sec <- as.numeric(diff(subday2$time_con), units = "secs")
+  
+  distDiff_m <- calcDeltaD(subday2$long, subday2$lat)
+  speed_ms <- distDiff_m/timeDelta_sec
+  
+  total_distance <- sum(distDiff_m)/1000
+  start_end_point <- subday2[c(1,nrow(subday2)), ]
+  
+  
+  subday2$depot_distance_start <- calcDeltaD_ref(pos_x = subday2$long, pos_y = subday2$lat, ref_x = subday2$long[1], ref_y = subday2$lat[1])
+  
+  subday2$depot_distance_end <- calcDeltaD_ref(pos_x = subday2$long, pos_y = subday2$lat, ref_x = subday2$long[nrow(subday2)], ref_y = subday2$lat[nrow(subday2)])
+  
+  startIndex <- which(subday2$depot_distance_start > 150)[1]
+
+  endIndices <- which(subday2$depot_distance_end[startIndex:nrow(subday2)] < 150)
+  indexRange <- max(endIndices) - min(endIndices)
+  
+  if (indexRange > 100)
+  {
+    max_diff <- diff(endIndices)
+    max_diff_index <- which(max_diff == max(max_diff))
+    endIndex <- endIndices[max_diff_index + 1]
+  }else{
+    endIndex <- which(subday2$depot_distance_end[startIndex:nrow(subday2)] < 150)[1]
+  }
+
+  totalTime <- as.numeric(as.duration(subday2$time_con[endIndex] - subday2$time_con[startIndex])/3600)
+  
+  ifResults <- findIF(dispose, subday2)
+  subday2$calcDeltaD_ref <- ifResults[[2]] 
+  
+  chainIndexed <- which(subday2$calcDeltaD_ref < 150)
+  
+  nBreaks <- length(chainIndexed)
+  
+  subday2_chain_time <- c()
+  subday2_chain_dist <- c()
+  
+  if (nBreaks > 0)
+  {
+      subday2_chain <- subset(subday2[1:chainIndexed[1],], WasteServiceBeatGroup_idWasteServiceBeatGroup == beatI)
+    if (nrow(subday2_chain) > 0)
+    {
+      subday2_chain_time <- c(subday2_chain_time, as.duration(max(subday2_chain$time_con) - min(subday2_chain$time_con)))
+      subday2_chain_dist <- c(subday2_chain_dist, calcDeltaD(subday2_chain$long, subday2_chain$lat))
+    }
+    if (nBreaks > 1)
+    {
+      for (i in 2:nBreaks)
+      {
+        subday2_chain <- subset(subday2[(chainIndexed[i-1]):chainIndexed[i],], WasteServiceBeatGroup_idWasteServiceBeatGroup == beatI)
+        if (nrow(subday2_chain) > 0)
+        {
+          subday2_chain_time <- c(subday2_chain_time, as.duration(max(subday2_chain$time_con) - min(subday2_chain$time_con)))
+          subday2_chain_dist <- c(subday2_chain_dist, calcDeltaD(subday2_chain$long, subday2_chain$lat))
+        }
+      }
+    }
+    subday2_chain <- subset(subday2[(chainIndexed[nBreaks]):nrow(subday2),], WasteServiceBeatGroup_idWasteServiceBeatGroup == beatI)
+      if (nrow(subday2_chain) > 0)
+      {
+        subday2_chain_time <- c(subday2_chain_time, as.duration(max(subday2_chain$time_con) - min(subday2_chain$time_con)))
+        subday2_chain_dist <- c(subday2_chain_dist, calcDeltaD(subday2_chain$long, subday2_chain$lat))
+      }
+  }else{
+    subday2_chain <- subset(subday2, WasteServiceBeatGroup_idWasteServiceBeatGroup == beatI) 
+  }
+  
+  tTotal <- sum(subday2_chain_time)/60/60
+  totalDeadTime <- totalTime - tTotal
+  timeUtilisation <- tTotal/totalTime
+  kmTotal <- sum(subday2_chain_dist)/1000
+  total_dead <- total_distance - kmTotal
+  distanceUtilisation <- kmTotal/total_distance
+  
+  kmCost <- total_distance*kostPerKm
+  timeCost <- totalTime*kostPerHour
+  totalCost <- kmCost + timeCost
+  
+  serviceKmCost <- kmTotal*kostPerKm
+  serviceTimeCost <- tTotal*kostPerHour
+  serviceTotal <- serviceKmCost + serviceTimeCost
+  
+  costFraction <- serviceTotal/totalCost
+  
+  output = list(serviceTime = tTotal,
+                totalTime = totalTime,
+                totalDeadTime = totalDeadTime,
+                timeUtilisation = timeUtilisation,
+                serviceKm = kmTotal,
+                totalKm = total_distance,
+                totalDeadKm = total_dead,
+                distanceUtilisation = distanceUtilisation,
+                travelCost = kmCost,
+                timeCost = timeCost,
+                totalCost = totalCost,
+                serviceTravelCost = serviceKmCost,
+                serviceTimeCost = serviceTimeCost,
+                serviceTotalCost = serviceTotal,
+                serviceCostFraction = costFraction)
+  
+  output2 = c(tTotal,
+              totalTime,
+              totalDeadTime,
+              timeUtilisation,
+              kmTotal,
+              total_distance,
+              total_dead,
+              distanceUtilisation,
+              kmCost,
+              timeCost,
+              totalCost,
+              serviceKmCost,
+              serviceTimeCost,
+              serviceTotal,
+              costFraction)
+  
+  return(output2)
+}
+
+#2	679	
+#2	687	
+#4	667	
+#5	697
+
+beatID <- 679
+dayOfWeekServiceDay <- 2
+
+dateData <- read.csv('dateDatasetTraining.csv')
+
+dbPath <- '../data/dataBaseStructure/dbs/CapeTown_Waste_mod.db'
+conDB <- dbConnect(RSQLite::SQLite(), dbname = dbPath)
+  
+q <- 'SELECT * FROM ConvertedGpsRecord WHERE WasteServiceBeatGroup_idWasteServiceBeatGroup == :a'
+
+beatGpsRecords <- dbGetQuery(conDB, q, params = list(a = beatID)) %>% left_join(dateData, by = c('ServiceDates_idServiceDates' = 'idServiceDates')) %>% filter(dayOfWeek_int == dayOfWeekServiceDay) %>% mutate(date_time = paste(date, time)) %>% arrange(date_time) 
+
+nUniqueVehiclesPerDay <- beatGpsRecords %>% group_by(date, WasteVehicles_idWasteVehicles) %>% summarise(n())
+
+ggplot(nUniqueVehiclesPerDay, aes(x = date, y = `n()`, col = as.factor(WasteVehicles_idWasteVehicles))) + geom_point()  + theme_bw() + geom_hline(yintercept = 200, col = "red") + coord_flip()
+
+nUniqueVehiclesPerDay %>% distinct()
+
+nUniqueVehiclesPerDayCount <- nUniqueVehiclesPerDay %>% group_by(WasteVehicles_idWasteVehicles) %>% summarise(nRecords = sum(`n()`))
+
+disconneted <- dbDisconnect(conDB)
+
+vehicleIDindex <- which.max(nUniqueVehiclesPerDayCount$nRecords)
+vehicleID <- nUniqueVehiclesPerDayCount$WasteVehicles_idWasteVehicles[vehicleIDindex]
+
+vehicleID
+
+dateData <- read.csv('dateDatasetTraining.csv')
+
+dbPath <- '../data/dataBaseStructure/dbs/CapeTown_Waste_mod.db'
+conDB <- dbConnect(RSQLite::SQLite(), dbname = dbPath)
+  
+q <- 'SELECT * FROM ConvertedGpsRecord WHERE WasteVehicles_idWasteVehicles == %i'
+q <- sprintf(q, vehicleID)
+
+vehicleRecords <- dbGetQuery(conDB, q) %>% left_join(dateData, by = c('ServiceDates_idServiceDates' = 'idServiceDates')) %>% filter(dayOfWeek_int == dayOfWeekServiceDay) %>% mutate(date_time = paste(date, time)) %>% arrange(date_time) %>% mutate(time_con = hms(time)) %>% filter(lat < -30 & long > 15)
+
+q <- 'SELECT * FROM WasteServiceBoundaryPoint'
+q <- sprintf(q, beatID)
+
+beatBoundary <-  dbGetQuery(conDB, q)
+disconneted <- dbDisconnect(conDB)
+
+recordsPerServiceDay <- vehicleRecords %>% group_by(date) %>% summarise(nRecordsDate = n()) 
+ggplot(vehicleRecords, aes(x = date)) + geom_bar() + theme_bw() + coord_flip()
+
+dispose <- read.csv('disposalFacilities.csv')
+beatBoundaryAll <- filter(beatBoundary, WasteServiceBeat_idWasteServiceBeatGroup %in%  vehicleRecords$WasteServiceBeatGroup_idWasteServiceBeatGroup)
+
+gplot <- ggplot(vehicleRecords, aes(x = long, y = lat)) + geom_path(data = beatBoundaryAll, aes(group = WasteServiceBeat_idWasteServiceBeatGroup), col = "grey", size = 0.2) + geom_path(aes(group = date), col = "darkred", alpha = 0.25, size = 0.5) + coord_quickmap() + theme_bw() + geom_point(data = dispose, col = "darkblue") + geom_path(data = filter(beatBoundary, WasteServiceBeat_idWasteServiceBeatGroup == beatID), aes(x = long, y = lat), col = "black") 
+gplot
+
+recordsPerServiceDay <- vehicleRecords %>% group_by(date) %>% summarise(nRecordsDate = n()) 
+ggplot(vehicleRecords, aes(x = date)) + geom_bar() + theme_bw() + coord_flip()
+
+nDays <- nrow(recordsPerServiceDay)
+outputFrame <- data.frame(beatID = rep(0, nDays),
+                          analysisDay = rep(NA, nDays),
+                          serviceTime = rep(0, nDays),
+                          totalTime = rep(0, nDays),
+                          totalDeadTime = rep(0, nDays),
+                          timeUtilisation = rep(NA, nDays),
+                          serviceKm = rep(0, nDays),
+                          totalKm = rep(0, nDays),
+                          totalDeadKm = rep(0, nDays),
+                          distanceUtilisation = rep(NA, nDays),
+                          travelCost = rep(0, nDays),
+                          timeCost = rep(0, nDays),
+                          totalCost = rep(0, nDays),
+                          serviceTravelCost = rep(0, nDays),
+                          serviceTimeCost = rep(0, nDays),
+                          serviceTotalCost = rep(0, nDays),
+                          serviceCostFraction = rep(0, nDays))
+
+for (i in 1:nDays)
+{
+  print(paste(i, 'of', nDays))
+  analysisDay <- as.character(recordsPerServiceDay$date[i])
+  costInfo <- beatCost(vehicleRecords, analysisDay, beatID, dispose)
+  if (length(costInfo) > 0)
+  {
+    outputFrame[i,] <- c(beatID, analysisDay, costInfo)
+  }else{
+    outputFrame[i,c(1:2)] <- c(beatID, analysisDay)
+  }
+}
+outputFrame$serviceTotalCost <- as.numeric(outputFrame$serviceTotalCost)
+outputFrame$totalCost <- as.numeric(outputFrame$totalCost)
+View(outputFrame)
+
+outputFrame$totalTime <- as.numeric(outputFrame$totalTime)
+outputFrame$serviceTime <- as.numeric(outputFrame$serviceTime)
+outputFrame$totalDeadTime <- as.numeric(outputFrame$totalDeadTime)
+
+outputFrame$totalKm <- as.numeric(outputFrame$totalKm)
+outputFrame$serviceKm <- as.numeric(outputFrame$serviceKm)
+outputFrame$totalDeadKm <- as.numeric(outputFrame$totalDeadKm)
+
+ggplot(outputFrame, aes(x = analysisDay, y = totalTime)) + geom_bar(stat = "identity") + theme_bw() + coord_flip() + xlab('Service date') + ylab("Total travel time (h)")
+
+ggsave('totalTravelTime.png', width = 20, height = 15, units = "cm")
+
+ggplot(outputFrame, aes(x = analysisDay, y = serviceTime)) + geom_bar(stat = "identity") + theme_bw() + coord_flip() + xlab('Service date') + ylab("Total service time (h)")
+
+ggsave('totalServiceTime.png', width = 20, height = 15, units = "cm")
+
+ggplot(outputFrame, aes(x = analysisDay, y = totalKm)) + geom_bar(stat = "identity") + theme_bw() + coord_flip() + xlab('Service date') + ylab("Total travel distance (km)")
+
+ggsave('totalTravelDistance.png', width = 20, height = 15, units = "cm")
+
+ggplot(outputFrame, aes(x = analysisDay, y = serviceKm)) + geom_bar(stat = "identity") + theme_bw() + coord_flip() + xlab('Service date') + ylab("Total service distance (km)")
+
+ggsave('totalTravelServiceDistance.png', width = 20, height = 15, units = "cm")
+
+ggplot(outputFrame, aes(x = analysisDay, y = totalCost)) + geom_bar(stat = "identity") + theme_bw() + coord_flip() + xlab('Service date') + ylab("Total cost (R)")
+
+ggsave('totalCost.png', width = 20, height = 15, units = "cm")
+
+ggplot(outputFrame, aes(x = analysisDay, y = serviceTotalCost)) + geom_bar(stat = "identity") + theme_bw() + coord_flip() + xlab('Service date') + ylab("Total service cost (R)")
+
+ggsave('totalServiceCost.png', width = 20, height = 15, units = "cm")
+
+ggplot(outputFrame, aes(x = analysisDay, y = totalTime)) + geom_bar(stat = "identity") + theme_bw() + coord_flip()
+
+ggplot(outputFrame, aes(x = analysisDay, y = serviceTotalCost)) + geom_bar(stat = "identity") + theme_bw() + coord_flip()
+summary(as.integer(outputFrame$totalCost))
+
+ggplot(outputFrame, aes(x = analysisDay, y = totalCost)) + geom_bar(stat = "identity") + theme_bw() + coord_flip()
+summary(as.integer(outputFrame$totalCost))
+```
