@@ -1,2 +1,3 @@
 # waco_an
-Waste collection analysis models
+
+Modules for waste collection analysis models, done in R and Python. Key input is GPS records of waste collection vehicles, supplimented with publically available data sources. 
