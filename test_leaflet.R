@@ -2,7 +2,7 @@ library(tidyverse)
 library(leaflet)
 library("plyr")
 
-households <- read.csv('data/householdBeats.csv.gz', stringsAsFactors = F)
+households <- read.csv('data/data_syntheticPopulation_householdBeats.csv.gz', stringsAsFactors = F)
 
 summary(households$hhSize)
 hhSize_3rd <- summary(households$hhSize)[[5]]
